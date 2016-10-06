@@ -76,9 +76,11 @@ func RunWorker(MasterAddress string, me string,
   wk.l = l
   Register(MasterAddress, me)
 
+  // The wokers are server and master is client
   // DON'T MODIFY CODE BELOW
   for wk.nRPC != 0 {
     conn, err := wk.l.Accept()
+    log.Printf("A request occurs\n")
     if err == nil {
       wk.nRPC -= 1
       go rpcs.ServeConn(conn)

@@ -64,6 +64,14 @@ type MapReduce struct {
   Workers map[string]*WorkerInfo 
 
   // add any additional state here
+  DoneMaps chan bool
+  RequestWoker chan bool
+  ReamainMaps int
+  AvailWorkerChannel chan string
+  AvailWorkers map[string]*WorkerInfo
+  DoneWork chan string
+  RemainJobs int
+  DoneJob chan bool
 }
 
 func InitMapReduce(nmap int, nreduce int,
@@ -78,6 +86,16 @@ func InitMapReduce(nmap int, nreduce int,
   mr.DoneChannel = make(chan bool)
 
   // initialize any additional state here
+  mr.RemainJobs = nmap + nreduce
+  mr.ReamainMaps = nmap
+  mr.DoneMaps = make(chan bool)
+  mr.RequestWoker = make(chan bool, 20)
+  mr.AvailWorkerChannel = make(chan string, 100)
+  mr.DoneWork = make(chan string)
+  mr.DoneJob = make(chan bool)
+
+  mr.Workers = make(map[string]*WorkerInfo)
+  mr.AvailWorkers = make(map[string]*WorkerInfo)
   return mr
 }
 
