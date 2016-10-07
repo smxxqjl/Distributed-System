@@ -1,3 +1,0 @@
-Test: Basic mapreduce ...
-Run mapreduce job /var/tmp/824-1000/mr5708-master 824-mrinput.txt
-Split 824-mrinput.txt
