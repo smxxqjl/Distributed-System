@@ -51,8 +51,6 @@ func (mr *MapReduce) UpdateInfo() {
       }
       */
       //delete(mr.AvailWorkers, workerName)
-    case <- mr.DoneChannel:
-      return
     case freeWorker := <- mr.DoneWork:
       log.Printf("A done signal receive\n")
       mr.ReamainMaps--
@@ -63,6 +61,7 @@ func (mr *MapReduce) UpdateInfo() {
       }
       if mr.RemainJobs == 0 {
 	mr.DoneJob <- true
+	return
       }
     default:
       //if needWorker && len(mr.AvailWorkers) != 0 {
