@@ -23,7 +23,6 @@ type ViewServer struct {
 	backupCrash    bool
 	ack            uint
 	currentView    View
-	sendView       View
 }
 
 //
@@ -34,7 +33,6 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	// Your code here.
 
 	/* The latter condition is for init condition */
-	//log.Printf("---------------- %d %d\n", args.Viewnum, args.Viewnum)
 	if args.Viewnum == 0 && vs.currentView.Viewnum != 0 {
 		//log.Printf("Zero depth ping !!!!!!!!!!!!!!!!")
 		if args.Me == vs.currentView.Primary {
@@ -91,66 +89,6 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 		}
 	}
 	reply.View = vs.currentView
-	//log.Printf("View num vs.currentView.Viewnum %d\n", vs.currentView.Viewnum)
-
-	/*
-	  updateView := false
-
-	  log.Printf("A ping: args:Me:%s primary:%s backup:%s\n", args.Me, vs.currentView.Primary, vs.currentView.Backup)
-	  if args.Viewnum == 0 {
-	    log.Printf("Zero depth ping !!!!!!!!!!!!!!!!")
-	    if args.Me == vs.currentView.Primary {
-	      vs.primaryCrash = true
-	    } else if args.Me == vs.currentView.Backup {
-	      vs.backupCrash = false
-	    }
-	  }
-
-	  if vs.backupCrash {
-	    log.Printf("Handle backupCrash\n")
-	    vs.currentView.Backup = ""
-	    updateView = true
-	    vs.backupCrash = false
-	    vs.mu.Lock()
-	    vs.backupPingout = 0
-	    vs.mu.Unlock()
-	  }
-	  if vs.primaryCrash {
-	    log.Printf("Handle primaryCrash\n")
-	    vs.currentView.Primary = vs.currentView.Backup
-	    vs.currentView.Backup = ""
-	    updateView = true
-	    vs.primaryCrash = false
-	    vs.mu.Lock()
-	    vs.primaryPingout = 0
-	    vs.mu.Unlock()
-	  }
-	  if args.Me == vs.currentView.Primary {
-	    vs.mu.Lock()
-	    vs.primaryPingout = 0
-	    vs.mu.Unlock()
-	  } else if args.Me == vs.currentView.Backup {
-	    vs.mu.Lock()
-	    vs.backupPingout = 0
-	    vs.mu.Unlock()
-	  } else if vs.currentView.Primary == "" {
-	    vs.currentView.Primary = args.Me
-	    updateView = true
-	  } else if vs.currentView.Backup == "" {
-	    vs.currentView.Backup = args.Me
-	    updateView = true
-	  }
-	  if updateView {
-	    //log.Printf("Add new num")
-	    vs.currentView.Viewnum++
-	  }
-
-	  if args.Me == vs.sendView.Primary || vs.sendView.Primary == "" {
-	    vs.sendView = vs.currentView
-	  }
-	  log.Printf("Send view: primary:%s backup:%s\n", vs.sendView.Primary, vs.sendView.Backup)
-	  reply.View = vs.sendView
-	*/
 	return nil
 }
 
