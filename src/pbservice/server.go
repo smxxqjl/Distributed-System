@@ -43,10 +43,13 @@ type PBServer struct {
 /* This function is called from RPC when primary want to send new put
 /* to its backup, for simpility the same args is used as Put()
 */
-func (pb *PBServer) Putbackup(args *PutArgs, reply *PutReply) error {
+func (pb *PBServer) Putbackup(args *PutbackupArgs, reply *PutbackupReply) error {
 	pb.mu.Lock()
 	pb.keyvalue[args.Key] = args.Value
 	pb.mu.Unlock()
+	pb.reqMu.Lock()
+	pb.handleReq[args.Reqnum] = args.Reqresult
+	pb.reqMu.Unlock()
 	return nil
 }
 
@@ -65,10 +68,11 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 		reply.Err = "NotMe"
 		return nil
 	}
-	if val, ok := pb.handleReq[args.Reqnum]; ok {
-		pb.reqMu.Lock()
+	pb.reqMu.Lock()
+	val, ok := pb.handleReq[args.Reqnum]
+	pb.reqMu.Unlock()
+	if ok {
 		reply.PreviousValue = val
-		pb.reqMu.Unlock()
 		return nil
 	}
 	pb.mu.Lock()
@@ -78,7 +82,9 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 			pb.keyvalue[args.Key] = ""
 		}
 		reply.PreviousValue = pb.keyvalue[args.Key]
+		pb.reqMu.Lock()
 		pb.handleReq[args.Reqnum] = pb.keyvalue[args.Key]
+		pb.reqMu.Unlock()
 		hashnum := hash(pb.keyvalue[args.Key] + args.Value)
 		pb.keyvalue[args.Key] = strconv.Itoa(int(hashnum))
 	} else {
@@ -87,7 +93,7 @@ func (pb *PBServer) Put(args *PutArgs, reply *PutReply) error {
 	value := pb.keyvalue[args.Key]
 	pb.mu.Unlock()
 	if pb.currentView.Backup != "" {
-		argsBack := &PutbackupArgs{args.Key, value, args.Reqnum}
+		argsBack := &PutbackupArgs{args.Key, value, args.Reqnum, reply.PreviousValue}
 		var replyBack PutbackupReply
 		call(pb.currentView.Backup, "PBServer.Putbackup", argsBack, &replyBack)
 	}
@@ -105,6 +111,10 @@ func (pb *PBServer) ShowAll() {
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
+	if pb.currentView.Primary != pb.me {
+		reply.Err = "NotMe"
+		return nil
+	}
 	pb.mu.Lock()
 	value, ok := pb.keyvalue[args.Key]
 	pb.mu.Unlock()
@@ -126,10 +136,11 @@ func (pb *PBServer) tick() {
 	if pb.me == pb.currentView.Primary &&
 		pb.currentView.Backup != reply.View.Backup &&
 		reply.View.Backup != "" {
-		initArgs := &InitBackupArgs{}
+		initArgs := &InitBackupArgs{&pb.keyvalue}
 		var initReply InitBackupReply
-		initArgs.Keyvalue = &pb.keyvalue
+		pb.mu.Lock()
 		call(reply.View.Backup, "PBServer.InitBackup", initArgs, &initReply)
+		pb.mu.Unlock()
 	}
 	pb.currentView = reply.View
 }

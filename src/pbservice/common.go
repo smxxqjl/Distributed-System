@@ -38,9 +38,10 @@ type GetReply struct {
 
 // Your RPC definitions here.
 type PutbackupArgs struct {
-	Key    string
-	Value  string
-	Reqnum int64
+	Key       string
+	Value     string
+	Reqnum    int64
+	Reqresult string
 }
 
 type PutbackupReply struct {
