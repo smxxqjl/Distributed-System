@@ -40,13 +40,9 @@ type Paxos struct {
 	me         int // index into peers[]
 
 	// Your data here.
-	agreeIns      map[int]interface{}
-	highestPre    int
-	highestAccseq int
-	highestAccval interface{}
-	prepareokNum  int
-	majorityDone  chan bool
-	proposers     map[int]Proposer
+	agreeIns  map[int]interface{}
+	proposers map[int]*Proposer
+	max       int
 }
 
 //
@@ -94,11 +90,11 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
-	px.highestAccval = nil
-	px.highestAccseq = -1
-	px.highestPre = -1
-	px.proposers[seq]
-	go pr.sendValue(seq, v)
+	pr := px.MakeProposer(seq)
+	px.mu.Lock()
+	px.proposers[seq] = pr
+	px.mu.Unlock()
+	go pr.sendValue(v)
 }
 
 type Proposal struct {
@@ -108,6 +104,7 @@ type Proposal struct {
 
 type Proposer struct {
 	seq           int
+	proNum        int
 	resProposal   []Proposal
 	px            *Paxos
 	v             interface{}
@@ -117,23 +114,26 @@ type Proposer struct {
 	highestAccval interface{}
 	majority      int
 	// we share the same channel value for accept and prepare
-	doneNum    int
-	successNum int
-	done       chan bool
-	reject     chan int
-	decided    bool
-	peerNum    int
-	isreject   bool
+	doneNum     int
+	successNum  int
+	done        chan bool
+	reject      chan int
+	decided     bool
+	decidedchan chan bool
+	peerNum     int
+	isreject    bool
 }
 
-func (px *Paxos) MakeProposer(v interface{}) *Proposer {
+func (px *Paxos) MakeProposer(seq int) *Proposer {
 	pr := &Proposer{}
+	pr.decidedchan = make(chan bool)
+	pr.seq = seq
 	pr.highestAccval = nil
 	pr.highestAccseq = -1
 	pr.highestPrenum = -1
 	pr.resProposal = make([]Proposal, len(px.peers))
 	pr.px = px
-	pr.v = v
+	pr.v = nil
 	pr.majority = len(px.peers)/2 + 1
 	pr.reject = make(chan int)
 	pr.done = make(chan bool)
@@ -142,12 +142,12 @@ func (px *Paxos) MakeProposer(v interface{}) *Proposer {
 	return pr
 }
 
-const sendInterval = time.Millisecond * 100
+const sendInterval = time.Millisecond * 10
 
-func (pr *Proposer) sendValue(seq int, v interface{}) {
-	log.Printf("iterface is %s\n", pr.px.highestAccval)
-	pr.seq = seq
+func (pr *Proposer) sendValue(v interface{}) {
+	pr.v = v
 	for {
+		pr.mu.Lock()
 		for _, v := range pr.resProposal {
 			// init to zero as a special indicator to show this
 			// proposal has not been set
@@ -155,22 +155,37 @@ func (pr *Proposer) sendValue(seq int, v interface{}) {
 			v.V = nil
 		}
 		// choose n, unique and higher than any n seen so far
-		if v := pr.px.Max(); v > pr.seq {
-			pr.seq = v
+		var v int
+		if pr.highestAccseq > pr.highestPrenum {
+			v = pr.highestAccseq + 1
+		} else {
+			v = pr.highestPrenum + 1
 		}
+		if pr.proNum < v {
+			pr.proNum = v
+		}
+		log.Printf("here proNum is %d \n", pr.proNum)
 		// send prepare(n) to all servers including self
 		pr.doneNum = 0
 		pr.successNum = 0
 		pr.isreject = false
+		pr.mu.Unlock()
 
 		for index, _ := range pr.px.peers {
-			go pr.sendPrepare(index, pr.seq)
+			go pr.sendPrepare(index)
 		}
 		// wait for majority
 		select {
+		case <-pr.decidedchan:
+			log.Printf("A another value win\n")
+			return
 		case replyNum := <-pr.reject:
 			log.Printf("Justice is rejected\n")
-			pr.seq = replyNum + 1
+			temp := pr.proNum
+			pr.mu.Lock()
+			pr.proNum = replyNum + 1
+			pr.mu.Unlock()
+			log.Printf("The ori proNum is %d now is set as %d", temp, pr.proNum)
 			<-pr.done
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
@@ -215,6 +230,8 @@ func (pr *Proposer) sendValue(seq int, v interface{}) {
 		}
 
 		select {
+		case <-pr.decidedchan:
+			return
 		case <-pr.done:
 			log.Printf("Accept justice is done\n")
 			pr.mu.Lock()
@@ -234,32 +251,31 @@ func (pr *Proposer) sendValue(seq int, v interface{}) {
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
 		}
-		if pr.decided {
-			log.Printf("The value is decided\n")
-			for index, _ := range pr.px.peers {
-				go pr.sendDecide(index, sendProposal)
-			}
-			<-pr.done
-			pr.mu.Lock()
-			pr.successNum = 0
-			pr.doneNum = 0
-			pr.mu.Unlock()
-			return
+		log.Printf("The value is decided %s\n", sendProposal.V)
+		for index, _ := range pr.px.peers {
+			go pr.sendDecide(index, sendProposal)
 		}
+		<-pr.done
+		pr.mu.Lock()
+		pr.successNum = 0
+		pr.doneNum = 0
+		pr.mu.Unlock()
+		return
 		log.Printf("End send\n")
 	}
 }
 
 type DecideArgs struct {
 	Proposal Proposal
+	Seq      int
 }
 type DecideReply struct {
 }
 
 func (pr *Proposer) sendDecide(index int, proposal Proposal) {
-	args := &DecideArgs{proposal}
+	args := &DecideArgs{proposal, pr.seq}
 	var reply DecideReply
-	call(pr.px.peers[index], "Paxos.RecDecide", args, &reply)
+	call(pr.px.peers[index], "Paxos.PaxosRecDecide", args, &reply)
 	pr.mu.Lock()
 	pr.doneNum++
 	if pr.doneNum == pr.peerNum {
@@ -267,16 +283,34 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	}
 	pr.mu.Unlock()
 }
-func (px *Paxos) RecDecide(args *DecideArgs, reply *DecideReply) error {
+
+func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
+	var pr *Proposer
+	var ok bool
 	px.mu.Lock()
-	px.agreeIns[args.Proposal.Seq] = args.Proposal.V
-	px.highestAccval = nil
+	if pr, ok = px.proposers[args.Seq]; !ok {
+		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
+		pr = px.proposers[args.Seq]
+	}
+	if args.Seq > px.max {
+		px.max = args.Seq
+	}
 	px.mu.Unlock()
+	pr.RecDecide(args, reply)
+	return nil
+}
+
+func (pr *Proposer) RecDecide(args *DecideArgs, reply *DecideReply) error {
+	pr.px.mu.Lock()
+	pr.px.agreeIns[pr.seq] = args.Proposal.V
+	pr.px.mu.Unlock()
+	pr.decidedchan <- true
 	return nil
 }
 
 type AcceptArgs struct {
 	Proposal Proposal
+	Seq      int
 }
 type AcceptReply struct {
 	Accept        bool
@@ -284,10 +318,10 @@ type AcceptReply struct {
 }
 
 func (pr *Proposer) sendAccept(index int, proposal Proposal) {
-	args := &AcceptArgs{proposal}
+	args := &AcceptArgs{proposal, pr.seq}
 	var reply AcceptReply
 	reply.Accept = true
-	responded := call(pr.px.peers[index], "Paxos.RecAccept", args, &reply)
+	responded := call(pr.px.peers[index], "Paxos.PaxosRecAccept", args, &reply)
 	pr.mu.Lock()
 	if responded && reply.Accept {
 		pr.successNum++
@@ -306,25 +340,37 @@ func (pr *Proposer) sendAccept(index int, proposal Proposal) {
 	pr.mu.Unlock()
 }
 
-func (px *Paxos) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
-	log.Printf("RecAccept Paxos %s args.seq %d accept with highest seen num: %d\n",
-		px.peers[px.me], args.Proposal.Seq, px.highestPre)
+func (px *Paxos) PaxosRecAccept(args *AcceptArgs, reply *AcceptReply) error {
+	var pr *Proposer
+	var ok bool
+	if pr, ok = px.proposers[args.Seq]; !ok {
+		px.mu.Lock()
+		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
+		pr = px.proposers[args.Seq]
+		px.mu.Unlock()
+	}
+	pr.RecAccept(args, reply)
+	return nil
+}
+
+func (pr *Proposer) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
 	reply.Accept = true
-	if args.Proposal.Seq < px.highestPre {
+	if args.Proposal.Seq < pr.highestPrenum {
 		reply.Accept = false
-		reply.HighestPrenum = px.highestPre
+		reply.HighestPrenum = pr.highestPrenum
 		return nil
 	} else {
 		reply.Accept = true
-		px.highestAccseq = args.Proposal.Seq
-		px.highestPre = args.Proposal.Seq
-		px.highestAccval = args.Proposal.V
+		pr.highestAccseq = args.Proposal.Seq
+		pr.highestPrenum = args.Proposal.Seq
+		pr.highestAccval = args.Proposal.V
 		return nil
 	}
 }
 
 type PrepareArgs struct {
-	Seq int
+	ProNum int
+	Seq    int
 }
 
 type PrepareReply struct {
@@ -333,17 +379,18 @@ type PrepareReply struct {
 	HighestPrenum int
 }
 
-func (pr *Proposer) sendPrepare(index int, seq int) {
-	args := &PrepareArgs{seq}
+func (pr *Proposer) sendPrepare(index int) {
+	args := &PrepareArgs{pr.proNum, pr.seq}
+	log.Printf("Send the proNum %d\n", pr.proNum)
 	var reply PrepareReply
 
-	responded := call(pr.px.peers[index], "Paxos.RecPrepare", args, &reply)
+	responded := call(pr.px.peers[index], "Paxos.PaxosRecPrepare", args, &reply)
 	/* Almost always responded successfuly */
 	if responded && reply.Accept {
 		pr.mu.Lock()
 		pr.successNum++
 		pr.mu.Unlock()
-	} else if !reply.Accept {
+	} else if !reply.Accept && responded {
 		pr.mu.Lock()
 		if !pr.isreject {
 			pr.reject <- reply.HighestPrenum
@@ -361,20 +408,31 @@ func (pr *Proposer) sendPrepare(index int, seq int) {
 	pr.mu.Unlock()
 }
 
+func (px *Paxos) PaxosRecPrepare(args *PrepareArgs, reply *PrepareReply) error {
+	var pr *Proposer
+	var ok bool
+	if pr, ok = px.proposers[args.Seq]; !ok {
+		px.mu.Lock()
+		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
+		pr = px.proposers[args.Seq]
+		px.mu.Unlock()
+	}
+	pr.RecPrepare(args, reply)
+	return nil
+}
+
 /* RPC must start with capital letter */
-func (px *Paxos) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
-	if args.Seq > px.highestPre {
-		log.Printf("Paxos %s args.seq %d accept with highest seen num: %d\n",
-			px.peers[px.me], args.Seq, px.highestPre)
+func (pr *Proposer) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
+	if args.ProNum > pr.highestPrenum {
+		log.Printf("Success with prepar\n")
 		reply.Accept = true
-		reply.Proposal.Seq = px.highestAccseq
-		reply.Proposal.V = px.highestAccval
-		px.highestPre = args.Seq
+		reply.Proposal.Seq = pr.highestAccseq
+		reply.Proposal.V = pr.highestAccval
+		pr.highestPrenum = args.ProNum
 	} else {
-		log.Printf("Paxos %s rejected args.seq %d with highest seen num: %d\n",
-			px.peers[px.me], args.Seq, px.highestPre)
+		log.Printf("Reject %d with %d\n", args.ProNum, pr.highestPrenum)
 		reply.Accept = false
-		reply.HighestPrenum = px.highestPre
+		reply.HighestPrenum = pr.highestPrenum
 	}
 	return nil
 }
@@ -396,15 +454,7 @@ func (px *Paxos) Done(seq int) {
 //
 func (px *Paxos) Max() int {
 	// Your code here.
-	var v int
-	px.mu.Lock()
-	if px.highestAccseq > px.highestPre {
-		v = px.highestAccseq
-	} else {
-		v = px.highestPre
-	}
-	px.mu.Unlock()
-	return v
+	return px.max
 }
 
 //
@@ -478,13 +528,11 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
+	px.max = -1
 
 	// Your initialization code here.
-	px.highestAccseq = -1
-	px.highestPre = -1
 	px.agreeIns = make(map[int]interface{})
-	px.proposer = make(map[int]Proposer)
-	px.highestAccval = nil
+	px.proposers = make(map[int]*Proposer)
 
 	if rpcs != nil {
 		// caller will create socket &c
