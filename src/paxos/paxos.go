@@ -275,7 +275,14 @@ type DecideReply struct {
 func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	args := &DecideArgs{proposal, pr.seq}
 	var reply DecideReply
-	call(pr.px.peers[index], "Paxos.PaxosRecDecide", args, &reply)
+	if index == pr.px.me {
+		pr.RecDecide(args, &reply)
+	} else {
+		pr.px.mu.Lock()
+		name := pr.px.peers[index]
+		pr.px.mu.Unlock()
+		call(name, "Paxos.PaxosRecDecide", args, &reply)
+	}
 	pr.mu.Lock()
 	pr.doneNum++
 	if pr.doneNum == pr.peerNum {
@@ -321,8 +328,15 @@ func (pr *Proposer) sendAccept(index int, proposal Proposal) {
 	args := &AcceptArgs{proposal, pr.seq}
 	var reply AcceptReply
 	reply.Accept = true
-	responded := call(pr.px.peers[index], "Paxos.PaxosRecAccept", args, &reply)
-	pr.mu.Lock()
+	responded := true
+	if index == pr.px.me {
+		pr.RecAccept(args, &reply)
+	} else {
+		pr.px.mu.Lock()
+		name := pr.px.peers[index]
+		pr.px.mu.Unlock()
+		responded = call(name, "Paxos.PaxosRecAccept", args, &reply)
+	}
 	if responded && reply.Accept {
 		pr.successNum++
 	} else if !reply.Accept {
@@ -333,6 +347,7 @@ func (pr *Proposer) sendAccept(index int, proposal Proposal) {
 		}
 		pr.mu.Lock()
 	}
+	pr.mu.Lock()
 	pr.doneNum++
 	if pr.doneNum == pr.peerNum {
 		pr.done <- true
@@ -343,12 +358,12 @@ func (pr *Proposer) sendAccept(index int, proposal Proposal) {
 func (px *Paxos) PaxosRecAccept(args *AcceptArgs, reply *AcceptReply) error {
 	var pr *Proposer
 	var ok bool
+	px.mu.Lock()
 	if pr, ok = px.proposers[args.Seq]; !ok {
-		px.mu.Lock()
 		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
 		pr = px.proposers[args.Seq]
-		px.mu.Unlock()
 	}
+	px.mu.Unlock()
 	pr.RecAccept(args, reply)
 	return nil
 }
@@ -384,7 +399,10 @@ func (pr *Proposer) sendPrepare(index int) {
 	log.Printf("Send the proNum %d\n", pr.proNum)
 	var reply PrepareReply
 
-	responded := call(pr.px.peers[index], "Paxos.PaxosRecPrepare", args, &reply)
+	pr.px.mu.Lock()
+	name := pr.px.peers[index]
+	pr.px.mu.Unlock()
+	responded := call(name, "Paxos.PaxosRecPrepare", args, &reply)
 	/* Almost always responded successfuly */
 	if responded && reply.Accept {
 		pr.mu.Lock()
@@ -401,7 +419,6 @@ func (pr *Proposer) sendPrepare(index int) {
 	pr.mu.Lock()
 	pr.resProposal[index] = reply.Proposal
 	pr.doneNum++
-	log.Printf("me is %s doneNum is %d\n", pr.px.peers[pr.px.me], pr.doneNum)
 	if pr.doneNum == pr.peerNum {
 		pr.done <- true
 	}
@@ -411,12 +428,12 @@ func (pr *Proposer) sendPrepare(index int) {
 func (px *Paxos) PaxosRecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 	var pr *Proposer
 	var ok bool
+	px.mu.Lock()
 	if pr, ok = px.proposers[args.Seq]; !ok {
-		px.mu.Lock()
 		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
 		pr = px.proposers[args.Seq]
-		px.mu.Unlock()
 	}
+	px.mu.Unlock()
 	pr.RecPrepare(args, reply)
 	return nil
 }
@@ -499,6 +516,8 @@ func (px *Paxos) Min() int {
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
 	// Your code here.
+	px.mu.Lock()
+	defer px.mu.Unlock()
 	if v, ok := px.agreeIns[seq]; ok {
 		return ok, v
 	} else {
