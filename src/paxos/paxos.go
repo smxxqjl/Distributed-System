@@ -277,6 +277,11 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	var reply DecideReply
 	if index == pr.px.me {
 		pr.RecDecide(args, &reply)
+		pr.px.mu.Lock()
+		if pr.seq > pr.px.max {
+			pr.px.max = pr.seq
+		}
+		pr.px.mu.Unlock()
 	} else {
 		pr.px.mu.Lock()
 		name := pr.px.peers[index]
