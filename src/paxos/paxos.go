@@ -201,6 +201,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 				log.Printf("But not from majority num: %d/%d",
 					pr.successNum, pr.majority)
 				pr.mu.Unlock()
+				return
 				time.Sleep(time.Duration(pr.px.me) * sendInterval)
 				continue
 			}
@@ -257,7 +258,9 @@ func (pr *Proposer) sendValue(v interface{}) {
 		case replyNum := <-pr.reject:
 			log.Printf("Accept justice is rejected\n")
 			pr.seq = replyNum + 1
+			log.Printf("And you not pass channel yet\n")
 			<-pr.done
+			log.Printf("Pass the channel")
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
 		}
@@ -361,12 +364,13 @@ func (pr *Proposer) sendAccept(index int, proposal Proposal, minNum int, caller 
 	if responded && reply.Accept {
 		pr.successNum++
 	} else if !reply.Accept {
+		log.Printf("Lock Lock Lock on heaven's door\n")
 		pr.mu.Lock()
 		if !pr.isreject {
 			pr.reject <- reply.HighestPrenum
 			pr.isreject = true
 		}
-		pr.mu.Lock()
+		pr.mu.Unlock()
 	}
 	pr.mu.Lock()
 	pr.doneNum++
@@ -429,8 +433,10 @@ func (pr *Proposer) sendPrepare(index int, minNum int, caller int) {
 	responded := call(name, "Paxos.PaxosRecPrepare", args, &reply)
 	/* Almost always responded successfuly */
 	if responded && reply.Accept {
+		log.Printf("we are here to be success")
 		pr.mu.Lock()
 		pr.successNum++
+		log.Printf("Add SuccessNum to %d\n", pr.successNum)
 		pr.mu.Unlock()
 	} else if !reply.Accept && responded {
 		pr.mu.Lock()
@@ -442,6 +448,7 @@ func (pr *Proposer) sendPrepare(index int, minNum int, caller int) {
 	}
 	pr.mu.Lock()
 	pr.resProposal[index] = reply.Proposal
+	log.Printf("Call name %s Add DoneNum to %d, successNum%d\n", name, pr.doneNum, pr.successNum)
 	pr.doneNum++
 	if pr.doneNum == pr.peerNum {
 		pr.done <- true
