@@ -37,6 +37,7 @@ type Paxos struct {
 	unreliable bool
 	rpcCount   int
 	peers      []string
+	minNums    []int
 	me         int // index into peers[]
 
 	// Your data here.
@@ -146,6 +147,7 @@ const sendInterval = time.Millisecond * 10
 
 func (pr *Proposer) sendValue(v interface{}) {
 	pr.v = v
+	var minNum int
 	for {
 		pr.mu.Lock()
 		for _, v := range pr.resProposal {
@@ -170,9 +172,12 @@ func (pr *Proposer) sendValue(v interface{}) {
 		pr.successNum = 0
 		pr.isreject = false
 		pr.mu.Unlock()
+		pr.px.mu.Lock()
+		minNum = pr.px.minNums[pr.px.me]
+		pr.px.mu.Unlock()
 
 		for index, _ := range pr.px.peers {
-			go pr.sendPrepare(index)
+			go pr.sendPrepare(index, minNum, pr.px.me)
 		}
 		// wait for majority
 		select {
@@ -224,9 +229,13 @@ func (pr *Proposer) sendValue(v interface{}) {
 			log.Printf("The value is set as decided\n")
 			pr.decided = true
 		}
+		pr.px.mu.Lock()
+		minNum = pr.px.minNums[pr.px.me]
+		pr.px.mu.Unlock()
+
 		sendProposal.Seq = pr.seq
 		for index, _ := range pr.px.peers {
-			go pr.sendAccept(index, sendProposal)
+			go pr.sendAccept(index, sendProposal, minNum, pr.px.me)
 		}
 
 		select {
@@ -239,6 +248,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 				log.Printf("Accept But not from majority num: %d/%d",
 					pr.successNum, pr.majority)
 				time.Sleep(time.Duration(pr.px.me) * sendInterval)
+				pr.mu.Unlock()
 				continue
 			}
 			pr.successNum = 0
@@ -276,12 +286,15 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	args := &DecideArgs{proposal, pr.seq}
 	var reply DecideReply
 	if index == pr.px.me {
+		log.Printf("I need to be myself %d / %d\n", pr.seq, pr.px.max)
 		pr.RecDecide(args, &reply)
-		pr.px.mu.Lock()
+		//pr.px.mu.Lock()
+		log.Printf("I can't be no one else %d / %d\n", pr.seq, pr.px.max)
 		if pr.seq > pr.px.max {
+			log.Printf("Self Do increase\n")
 			pr.px.max = pr.seq
 		}
-		pr.px.mu.Unlock()
+		//pr.px.mu.Unlock()
 	} else {
 		pr.px.mu.Lock()
 		name := pr.px.peers[index]
@@ -305,6 +318,7 @@ func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
 		pr = px.proposers[args.Seq]
 	}
 	if args.Seq > px.max {
+		log.Printf("Do increase\n")
 		px.max = args.Seq
 	}
 	px.mu.Unlock()
@@ -316,21 +330,23 @@ func (pr *Proposer) RecDecide(args *DecideArgs, reply *DecideReply) error {
 	pr.px.mu.Lock()
 	pr.px.agreeIns[pr.seq] = args.Proposal.V
 	pr.px.mu.Unlock()
-	pr.decidedchan <- true
+	//case pr.decidedchan <- true
 	return nil
 }
 
 type AcceptArgs struct {
 	Proposal Proposal
 	Seq      int
+	MinNum   int
+	Caller   int
 }
 type AcceptReply struct {
 	Accept        bool
 	HighestPrenum int
 }
 
-func (pr *Proposer) sendAccept(index int, proposal Proposal) {
-	args := &AcceptArgs{proposal, pr.seq}
+func (pr *Proposer) sendAccept(index int, proposal Proposal, minNum int, caller int) {
+	args := &AcceptArgs{proposal, pr.seq, minNum, caller}
 	var reply AcceptReply
 	reply.Accept = true
 	responded := true
@@ -364,6 +380,7 @@ func (px *Paxos) PaxosRecAccept(args *AcceptArgs, reply *AcceptReply) error {
 	var pr *Proposer
 	var ok bool
 	px.mu.Lock()
+	px.minNums[args.Caller] = args.MinNum
 	if pr, ok = px.proposers[args.Seq]; !ok {
 		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
 		pr = px.proposers[args.Seq]
@@ -391,6 +408,8 @@ func (pr *Proposer) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
 type PrepareArgs struct {
 	ProNum int
 	Seq    int
+	MinNum int
+	Caller int
 }
 
 type PrepareReply struct {
@@ -399,8 +418,8 @@ type PrepareReply struct {
 	HighestPrenum int
 }
 
-func (pr *Proposer) sendPrepare(index int) {
-	args := &PrepareArgs{pr.proNum, pr.seq}
+func (pr *Proposer) sendPrepare(index int, minNum int, caller int) {
+	args := &PrepareArgs{pr.proNum, pr.seq, minNum, caller}
 	log.Printf("Send the proNum %d\n", pr.proNum)
 	var reply PrepareReply
 
@@ -434,6 +453,7 @@ func (px *Paxos) PaxosRecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 	var pr *Proposer
 	var ok bool
 	px.mu.Lock()
+	px.minNums[args.Caller] = args.MinNum
 	if pr, ok = px.proposers[args.Seq]; !ok {
 		px.proposers[args.Seq] = px.MakeProposer(args.Seq)
 		pr = px.proposers[args.Seq]
@@ -467,6 +487,14 @@ func (pr *Proposer) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 //
 func (px *Paxos) Done(seq int) {
 	// Your code here.
+	px.mu.Lock()
+	i := px.minNums[px.me]
+	px.minNums[px.me] = seq
+	for ; i < seq; i++ {
+		delete(px.proposers, i)
+		delete(px.agreeIns, i)
+	}
+	px.mu.Unlock()
 }
 
 //
@@ -509,7 +537,15 @@ func (px *Paxos) Max() int {
 //
 func (px *Paxos) Min() int {
 	// You code here.
-	return 0
+	px.mu.Lock()
+	minNum := px.minNums[0]
+	for _, v := range px.minNums {
+		if v < minNum {
+			minNum = v
+		}
+	}
+	px.mu.Unlock()
+	return minNum + 1
 }
 
 //
@@ -557,6 +593,10 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 	// Your initialization code here.
 	px.agreeIns = make(map[int]interface{})
 	px.proposers = make(map[int]*Proposer)
+	px.minNums = make([]int, len(px.peers))
+	for i := 0; i < len(px.peers); i++ {
+		px.minNums[i] = -1
+	}
 
 	if rpcs != nil {
 		// caller will create socket &c
