@@ -44,6 +44,7 @@ type Paxos struct {
 	agreeIns  map[int]interface{}
 	proposers map[int]*Proposer
 	max       int
+	sendMu    sync.Mutex
 }
 
 //
@@ -91,9 +92,16 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 //
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
-	pr := px.MakeProposer(seq)
 	px.mu.Lock()
-	px.proposers[seq] = pr
+	if _, ok := px.agreeIns[seq]; ok {
+		px.mu.Unlock()
+		return
+	}
+	if _, ok := px.proposers[seq]; !ok {
+		prt := px.MakeProposer(seq)
+		px.proposers[seq] = prt
+	}
+	pr := px.proposers[seq]
 	px.mu.Unlock()
 	go pr.sendValue(v)
 }
@@ -143,9 +151,12 @@ func (px *Paxos) MakeProposer(seq int) *Proposer {
 	return pr
 }
 
-const sendInterval = time.Millisecond * 10
+const sendInterval = time.Millisecond
 
 func (pr *Proposer) sendValue(v interface{}) {
+	pr.px.sendMu.Lock()
+	defer pr.px.sendMu.Unlock()
+	log.Printf("Start a send\n")
 	pr.v = v
 	var minNum int
 	for {
@@ -180,6 +191,9 @@ func (pr *Proposer) sendValue(v interface{}) {
 			go pr.sendPrepare(index, minNum, pr.px.me)
 		}
 		// wait for majority
+		if pr.px.dead {
+			return
+		}
 		select {
 		case <-pr.decidedchan:
 			log.Printf("A another value win\n")
@@ -187,9 +201,9 @@ func (pr *Proposer) sendValue(v interface{}) {
 		case replyNum := <-pr.reject:
 			log.Printf("Justice is rejected\n")
 			temp := pr.proNum
-			pr.mu.Lock()
+			//pr.mu.Lock()
 			pr.proNum = replyNum + 1
-			pr.mu.Unlock()
+			//pr.mu.Unlock()
 			log.Printf("The ori proNum is %d now is set as %d", temp, pr.proNum)
 			<-pr.done
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
@@ -239,6 +253,9 @@ func (pr *Proposer) sendValue(v interface{}) {
 			go pr.sendAccept(index, sendProposal, minNum, pr.px.me)
 		}
 
+		if pr.px.dead {
+			return
+		}
 		select {
 		case <-pr.decidedchan:
 			return
@@ -258,9 +275,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 		case replyNum := <-pr.reject:
 			log.Printf("Accept justice is rejected\n")
 			pr.seq = replyNum + 1
-			log.Printf("And you not pass channel yet\n")
 			<-pr.done
-			log.Printf("Pass the channel")
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
 		}
@@ -268,13 +283,16 @@ func (pr *Proposer) sendValue(v interface{}) {
 		for index, _ := range pr.px.peers {
 			go pr.sendDecide(index, sendProposal)
 		}
+		if pr.px.dead {
+			return
+		}
 		<-pr.done
 		pr.mu.Lock()
 		pr.successNum = 0
 		pr.doneNum = 0
 		pr.mu.Unlock()
-		return
 		log.Printf("End send\n")
+		return
 	}
 }
 
@@ -289,12 +307,9 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	args := &DecideArgs{proposal, pr.seq}
 	var reply DecideReply
 	if index == pr.px.me {
-		log.Printf("I need to be myself %d / %d\n", pr.seq, pr.px.max)
 		pr.RecDecide(args, &reply)
 		//pr.px.mu.Lock()
-		log.Printf("I can't be no one else %d / %d\n", pr.seq, pr.px.max)
 		if pr.seq > pr.px.max {
-			log.Printf("Self Do increase\n")
 			pr.px.max = pr.seq
 		}
 		//pr.px.mu.Unlock()
