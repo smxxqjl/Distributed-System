@@ -151,12 +151,11 @@ func (px *Paxos) MakeProposer(seq int) *Proposer {
 	return pr
 }
 
-const sendInterval = time.Millisecond
+const sendInterval = time.Millisecond * 100
 
 func (pr *Proposer) sendValue(v interface{}) {
 	pr.px.sendMu.Lock()
 	defer pr.px.sendMu.Unlock()
-	log.Printf("Start a send\n")
 	pr.v = v
 	var minNum int
 	for {
@@ -216,7 +215,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 					pr.successNum, pr.majority)
 				pr.mu.Unlock()
 				return
-				time.Sleep(time.Duration(pr.px.me) * sendInterval)
+				//time.Sleep(time.Duration(pr.px.me) * sendInterval)
 				continue
 			}
 			pr.successNum = 0
@@ -241,14 +240,13 @@ func (pr *Proposer) sendValue(v interface{}) {
 		log.Printf("Done with find maximum response\n")
 		if highestNum == -1 || sendProposal.V == nil {
 			sendProposal.V = v
-			log.Printf("The value is set as decided\n")
 			pr.decided = true
 		}
 		pr.px.mu.Lock()
 		minNum = pr.px.minNums[pr.px.me]
 		pr.px.mu.Unlock()
 
-		sendProposal.Seq = pr.seq
+		sendProposal.Seq = pr.proNum
 		for index, _ := range pr.px.peers {
 			go pr.sendAccept(index, sendProposal, minNum, pr.px.me)
 		}
@@ -273,8 +271,9 @@ func (pr *Proposer) sendValue(v interface{}) {
 			pr.doneNum = 0
 			pr.mu.Unlock()
 		case replyNum := <-pr.reject:
-			log.Printf("Accept justice is rejected\n")
-			pr.seq = replyNum + 1
+			log.Printf("%s Accept justice %d is rejected by %d\n",
+				pr.px.peers[pr.px.me], sendProposal.Seq, replyNum)
+			pr.proNum = replyNum + 1
 			<-pr.done
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
@@ -282,9 +281,6 @@ func (pr *Proposer) sendValue(v interface{}) {
 		log.Printf("The value is decided %s\n", sendProposal.V)
 		for index, _ := range pr.px.peers {
 			go pr.sendDecide(index, sendProposal)
-		}
-		if pr.px.dead {
-			return
 		}
 		<-pr.done
 		pr.mu.Lock()
@@ -307,6 +303,7 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 	args := &DecideArgs{proposal, pr.seq}
 	var reply DecideReply
 	if index == pr.px.me {
+		log.Printf("Send self a decide %d\n", index)
 		pr.RecDecide(args, &reply)
 		//pr.px.mu.Lock()
 		if pr.seq > pr.px.max {
@@ -317,6 +314,8 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 		pr.px.mu.Lock()
 		name := pr.px.peers[index]
 		pr.px.mu.Unlock()
+		/* We don't handle the error if the callee did not reponded */
+		log.Printf("Send other a decide %d\n", index)
 		call(name, "Paxos.PaxosRecDecide", args, &reply)
 	}
 	pr.mu.Lock()
@@ -328,6 +327,7 @@ func (pr *Proposer) sendDecide(index int, proposal Proposal) {
 }
 
 func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
+	log.Printf("")
 	var pr *Proposer
 	var ok bool
 	px.mu.Lock()
@@ -336,7 +336,6 @@ func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
 		pr = px.proposers[args.Seq]
 	}
 	if args.Seq > px.max {
-		log.Printf("Do increase\n")
 		px.max = args.Seq
 	}
 	px.mu.Unlock()
@@ -346,9 +345,12 @@ func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
 
 func (pr *Proposer) RecDecide(args *DecideArgs, reply *DecideReply) error {
 	pr.px.mu.Lock()
+	log.Printf("Set decide now!! %d\n", args.Proposal.V)
 	pr.px.agreeIns[pr.seq] = args.Proposal.V
 	pr.px.mu.Unlock()
 	//case pr.decidedchan <- true
+	_, v := pr.px.Status(pr.seq)
+	log.Printf("value:%d, seq: %s\n", v, pr.seq)
 	return nil
 }
 
@@ -417,9 +419,12 @@ func (pr *Proposer) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
 		return nil
 	} else {
 		reply.Accept = true
+		pr.mu.Lock()
 		pr.highestAccseq = args.Proposal.Seq
 		pr.highestPrenum = args.Proposal.Seq
+		log.Printf("highest Prenum is set to %d\n", pr.highestPrenum)
 		pr.highestAccval = args.Proposal.V
+		pr.mu.Unlock()
 		return nil
 	}
 }
@@ -492,11 +497,14 @@ func (pr *Proposer) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 		reply.Accept = true
 		reply.Proposal.Seq = pr.highestAccseq
 		reply.Proposal.V = pr.highestAccval
+		pr.mu.Lock()
 		pr.highestPrenum = args.ProNum
+		pr.mu.Unlock()
 	} else {
 		log.Printf("Reject %d with %d\n", args.ProNum, pr.highestPrenum)
 		reply.Accept = false
 		reply.HighestPrenum = pr.highestPrenum
+		log.Printf("highest Prenum is set to %d\n", pr.highestPrenum)
 	}
 	return nil
 }
@@ -584,9 +592,9 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
 	if v, ok := px.agreeIns[seq]; ok {
 		return ok, v
 	} else {
+		log.Printf("An unOk ooh\n")
 		return ok, nil
 	}
-	return false, nil
 }
 
 //

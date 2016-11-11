@@ -7,6 +7,7 @@ import "os"
 import "time"
 import "fmt"
 import "math/rand"
+import "log"
 
 func port(tag string, host int) string {
 	s := "/var/tmp/824-"
@@ -35,16 +36,20 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
 			}
 		}
 	}
+	log.Printf("ndecided require %d", seq)
+	log.Printf("But it turn out to be %d\n", count)
 	return count
 }
 
 func waitn(t *testing.T, pxa []*Paxos, seq int, wanted int) {
+	var num int
 	to := 10 * time.Millisecond
 	for iters := 0; iters < 30; iters++ {
-		if ndecided(t, pxa, seq) >= wanted {
+		if num = ndecided(t, pxa, seq); num >= wanted {
 			break
 		}
 		time.Sleep(to)
+		log.Printf("waitn sleep num: %d, wanted: %d\n", num, wanted)
 		if to < time.Second {
 			to *= 2
 		}
@@ -516,6 +521,7 @@ func TestMany(t *testing.T) {
 		// number of file descriptors.
 		for seq >= 5 && ndecided(t, pxa, seq-5) < npaxos {
 			time.Sleep(20 * time.Millisecond)
+			log.Printf("Unstastify")
 		}
 		for i := 0; i < npaxos; i++ {
 			pxa[i].Start(seq, (seq*10)+i)
