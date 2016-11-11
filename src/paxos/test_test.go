@@ -28,16 +28,14 @@ func ndecided(t *testing.T, pxa []*Paxos, seq int) int {
 			decided, v1 := pxa[i].Status(seq)
 			if decided {
 				if count > 0 && v != v1 {
-					t.Fatalf("decided values do not match; seq=%v i=%v v=%v v1=%v",
-						seq, i, v, v1)
+					t.Fatalf("decided values do not match; seq=%v i=%v v=%v v1=%v i=%d",
+						seq, i, v, v1, i)
 				}
 				count++
 				v = v1
 			}
 		}
 	}
-	log.Printf("ndecided require %d", seq)
-	log.Printf("But it turn out to be %d\n", count)
 	return count
 }
 
@@ -49,7 +47,6 @@ func waitn(t *testing.T, pxa []*Paxos, seq int, wanted int) {
 			break
 		}
 		time.Sleep(to)
-		log.Printf("waitn sleep num: %d, wanted: %d\n", num, wanted)
 		if to < time.Second {
 			to *= 2
 		}
@@ -521,7 +518,6 @@ func TestMany(t *testing.T) {
 		// number of file descriptors.
 		for seq >= 5 && ndecided(t, pxa, seq-5) < npaxos {
 			time.Sleep(20 * time.Millisecond)
-			log.Printf("Unstastify")
 		}
 		for i := 0; i < npaxos; i++ {
 			pxa[i].Start(seq, (seq*10)+i)
@@ -606,21 +602,25 @@ func TestManyUnreliable(t *testing.T) {
 
 	const ninst = 50
 	for seq := 1; seq < ninst; seq++ {
+		log.Printf("First loop\n")
 		// only 3 active instances, to limit the
 		// number of file descriptors.
 		for seq >= 3 && ndecided(t, pxa, seq-3) < npaxos {
 			time.Sleep(20 * time.Millisecond)
 		}
 		for i := 0; i < npaxos; i++ {
+			log.Printf("send and sleep\n")
 			pxa[i].Start(seq, (seq*10)+i)
 		}
 	}
 
 	for {
+		log.Printf("Second loop\n")
 		done := true
 		for seq := 1; seq < ninst; seq++ {
-			if ndecided(t, pxa, seq) < npaxos {
+			if v := ndecided(t, pxa, seq); v < npaxos {
 				done = false
+				log.Printf("Require:%d/%d\n", v, npaxos)
 			}
 		}
 		if done {
