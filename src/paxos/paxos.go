@@ -131,6 +131,7 @@ type Proposer struct {
 	decidedchan chan bool
 	peerNum     int
 	isreject    bool
+	accSet      bool
 }
 
 func (px *Paxos) MakeProposer(seq int) *Proposer {
@@ -149,13 +150,14 @@ func (px *Paxos) MakeProposer(seq int) *Proposer {
 	pr.done = make(chan bool)
 	pr.peerNum = len(px.peers)
 	pr.decided = true
+	pr.accSet = false
 	return pr
 }
 
 const sendInterval = time.Millisecond * 100
 
 func (pr *Proposer) sendValue(v interface{}) {
-	log.Printf("Start seq:%d\n", pr.seq)
+	//log.Printf("Start seq:%d\n", pr.seq)
 	pr.px.sendMu.Lock()
 	defer pr.px.sendMu.Unlock()
 	pr.v = v
@@ -212,7 +214,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 				//time.Sleep(time.Duration(pr.px.me) * sendInterval)
 				continue
 			}
-			log.Printf("Pass majority %d/%d", pr.successNum, pr.majority)
+			//log.Printf("Pass majority %d/%d", pr.successNum, pr.majority)
 			pr.successNum = 0
 			pr.doneNum = 0
 			pr.mu.Unlock()
@@ -230,7 +232,8 @@ func (pr *Proposer) sendValue(v interface{}) {
 				pr.decided = false
 			}
 		}
-		if highestNum == -1 {
+		log.Printf("highestNum is %d and Proposal is %d\n", highestNum, sendProposal.V)
+		if highestNum == -1 && sendProposal.V != nil {
 			log.Printf("Send original\n")
 			sendProposal.V = v
 			pr.decided = true
@@ -266,7 +269,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
 		}
-		log.Printf("The value seq:%d is decided %d now is to send\n", pr.seq, sendProposal.V)
+		//log.Printf("The value seq:%d is decided %d now is to send\n", pr.seq, sendProposal.V)
 		for index, _ := range pr.px.peers {
 			go pr.sendDecide(index, sendProposal)
 		}
@@ -275,7 +278,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 		pr.successNum = 0
 		pr.doneNum = 0
 		pr.mu.Unlock()
-		log.Printf("End send")
+		//log.Printf("End send")
 		return
 	}
 }
@@ -331,7 +334,7 @@ func (px *Paxos) PaxosRecDecide(args *DecideArgs, reply *DecideReply) error {
 func (pr *Proposer) RecDecide(args *DecideArgs, reply *DecideReply) error {
 	pr.px.mu.Lock()
 	pr.px.agreeIns[pr.seq] = args.Proposal.V
-	log.Printf("%d'sAgree ins is set as %d in %d\n", pr.px.me, args.Proposal.V, pr.seq)
+	//log.Printf("%d'sAgree ins is set as %d in %d\n", pr.px.me, args.Proposal.V, pr.seq)
 	pr.px.mu.Unlock()
 	//case pr.decidedchan <- true
 	return nil
@@ -405,7 +408,8 @@ func (pr *Proposer) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
 		pr.highestAccseq = args.Proposal.Seq
 		pr.highestPrenum = args.Proposal.Seq
 		pr.highestAccval = args.Proposal.V
-		log.Printf("The highest val is set as %d\n", pr.highestAccval)
+		pr.accSet = true
+		//log.Printf("The highest val is set as %d\n", pr.highestAccval)
 		pr.mu.Unlock()
 		return nil
 	}
@@ -472,7 +476,11 @@ func (px *Paxos) PaxosRecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 func (pr *Proposer) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 	if args.ProNum > pr.highestPrenum {
 		reply.Accept = true
-		reply.Proposal.Seq = pr.highestAccseq
+		if pr.accSet {
+			reply.Proposal.Seq = pr.highestAccseq
+		} else {
+			reply.Proposal.Seq = -1
+		}
 		reply.Proposal.V = pr.highestAccval
 		pr.mu.Lock()
 		pr.highestPrenum = args.ProNum
