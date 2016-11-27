@@ -1,5 +1,6 @@
 package kvpaxos
 
+import "strconv"
 import "net"
 import "fmt"
 import "net/rpc"
@@ -8,10 +9,10 @@ import "paxos"
 import "sync"
 import "os"
 import "syscall"
+
 import "encoding/gob"
 import "math/rand"
 import "time"
-import "strconv"
 
 const Debug = 0
 
@@ -30,11 +31,11 @@ type Op struct {
 	// Two type of Operation "Get" "Put". Get with one argument
 	// Key, Put and Puthash with the same operation string "Put" while puthash
 	// set doHash true.
-	Operation string
-	Key       string
-	Value     string
-	DoHash    bool
-	OpName    string
+	Operation  string
+	Key        string
+	Value      string
+	DoHash     bool
+	Identifier int64
 }
 
 type KVPaxos struct {
@@ -46,22 +47,33 @@ type KVPaxos struct {
 	px         *paxos.Paxos
 
 	// Your definitions here.
-	// The kvpaxos will maintain an opseq number for unique the op by making
+
+	// The kvpaxos will maintain an opnumber for unique the op by making
 	// the string me:opSeq
-	opSeq int
+	opNum      int
+	exeSeq     int
+	keyValue   map[string]string
+	executedOp map[int64]string
 }
 
-func (kv *KVPaxos) waitAgreement(seq int, operation Op) bool {
+func (kv *KVPaxos) waitAgreement(seq int, operation Op) (bool, Op) {
 	to := 10 * time.Millisecond
 	for {
-		decided, v := kv.px.Status(seq)
-		reOp := v.(Op)
-		if decided {
-			return operation.OpName == reOp.OpName
+		if decided, v := kv.px.Status(seq); decided {
+			reOp := v.(Op)
+			log.Printf("Choosen id:%d and the require id is %d",
+				reOp.Identifier, operation.Identifier)
+			return operation.Identifier == reOp.Identifier, reOp
 		}
+		log.Printf("seq %d not decided wating...\n", seq)
 		time.Sleep(to)
-		if to < 10*time.Second {
+		if to < 2*time.Second {
 			to *= 2
+		}
+		if to >= 1*time.Second {
+			log.Printf("Active go on\n")
+			operationActive := Op{"Get", "", "", false, nrand()}
+			kv.px.Start(seq, operationActive)
 		}
 	}
 }
@@ -69,28 +81,142 @@ func (kv *KVPaxos) waitAgreement(seq int, operation Op) bool {
 func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	// Your code here.
 	sendOp := Op{"Get", args.Key, "", false,
-		strconv.Itoa(kv.me) + ":" + strconv.Itoa(kv.opSeq)}
+		args.Identifier}
+	var seq int
 	for {
-		seq := kv.px.Max() + 1
+		seq = kv.px.Max() + 1
+		log.Printf("Start agree with %d id:%d\n", seq, args.Identifier)
 		kv.px.Start(seq, sendOp)
-		if kv.waitAgreement(seq, sendOp) {
+		if agree, _ := kv.waitAgreement(seq, sendOp); agree {
 			break
+		} else {
+			log.Printf("not choosen in this round\n")
+			continue
 		}
 	}
+
+	/*
+		to := 10 * time.Millisecond
+		for kv.exeSeq < seq {
+			time.Sleep(to)
+			if to < 10*time.Second {
+				to *= 2
+			}
+
+		}
+
+		log.Printf("After waiting")
+		kv.mu.Lock()
+		if val, ok := kv.executedOp[args.Identifier]; ok {
+			reply.Value = val
+		} else {
+			if vall, okk := kv.keyValue[args.Key]; okk {
+				reply.Value = vall
+			} else {
+				reply.Value = ""
+			}
+			kv.executedOp[args.Identifier] = reply.Value
+		}
+		log.Printf("Execute done\n")
+		kv.exeSeq++
+		kv.mu.Unlock()
+	*/
+	log.Printf("SerNun:%d Start to execute %d/%d\n", kv.me, kv.exeSeq, seq)
+	kv.executeUntil(seq)
+	kv.mu.Lock()
+	reply.Value = kv.executedOp[args.Identifier]
+	kv.px.Done(seq)
+	kv.mu.Unlock()
+
 	return nil
+}
+
+// This function execute all the agreed instance before seq
+func (kv *KVPaxos) executeUntil(seq int) {
+	var nullop Op
+	kv.mu.Lock()
+	for ; kv.exeSeq <= seq; kv.exeSeq++ {
+		_, exeOp := kv.waitAgreement(kv.exeSeq, nullop)
+		if _, alreadyExecute := kv.executedOp[exeOp.Identifier]; alreadyExecute {
+			continue
+		} else {
+			if exeOp.Operation == "Get" {
+				if value, keyexist := kv.keyValue[exeOp.Key]; keyexist {
+					kv.executedOp[exeOp.Identifier] = value
+				} else {
+					kv.executedOp[exeOp.Identifier] = ""
+				}
+			} else if exeOp.Operation == "Put" {
+				if _, vExist := kv.keyValue[exeOp.Key]; !vExist {
+					kv.keyValue[exeOp.Key] = ""
+				}
+				if exeOp.DoHash {
+					kv.executedOp[exeOp.Identifier] = kv.keyValue[exeOp.Key]
+					hashnum := hash(kv.keyValue[exeOp.Key] + exeOp.Value)
+					kv.keyValue[exeOp.Key] = strconv.Itoa(int(hashnum))
+				} else {
+					kv.executedOp[exeOp.Identifier] = kv.keyValue[exeOp.Key]
+					kv.keyValue[exeOp.Key] = exeOp.Value
+				}
+			} else {
+				log.Printf("Unknown method %s can not execute\n", exeOp.Operation)
+			}
+		}
+	}
+	kv.mu.Unlock()
 }
 
 func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 	// Your code here.
+	var seq int
 	sendOp := Op{"Put", args.Key, args.Value,
-		args.DoHash, strconv.Itoa(kv.me) + ":" + strconv.Itoa(kv.opSeq)}
+		args.DoHash, args.Identifier}
 	for {
-		seq := kv.px.Max() + 1
+		seq = kv.px.Max() + 1
+		log.Printf("Start agree with %d id:%d\n", seq, args.Identifier)
 		kv.px.Start(seq, sendOp)
-		if kv.waitAgreement(seq, sendOp) {
+		if agree, _ := kv.waitAgreement(seq, sendOp); agree {
 			break
+		} else {
+			continue
 		}
 	}
+
+	/*
+		for kv.exeSeq < seq {
+			time.Sleep(to)
+			if to < 10*time.Second {
+				to *= 2
+			}
+
+		}
+			log.Printf("After waiting\n")
+			kv.mu.Lock()
+			if val, ok := kv.executedOp[args.Identifier]; ok {
+				reply.PreviousValue = val
+			} else {
+				if args.DoHash {
+					if _, ok := kv.keyValue[args.Key]; !ok {
+						kv.keyValue[args.Key] = ""
+					}
+					reply.PreviousValue = kv.keyValue[args.Key]
+					kv.executedOp[args.Identifier] = reply.PreviousValue
+					hashnum := hash(kv.keyValue[args.Key] + args.Value)
+					kv.keyValue[args.Key] = strconv.Itoa(int(hashnum))
+				} else {
+					kv.keyValue[args.Key] = args.Value
+				}
+			}
+			log.Printf("Done execute")
+			kv.exeSeq++
+
+			kv.mu.Unlock()
+	*/
+	log.Printf("SerNun:%d Start to execute %d/%d\n", kv.me, kv.exeSeq, seq)
+	kv.executeUntil(seq)
+	kv.mu.Lock()
+	reply.PreviousValue = kv.executedOp[args.Identifier]
+	kv.mu.Unlock()
 	return nil
 }
 
@@ -118,6 +244,9 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv.me = me
 
 	// Your initialization code here.
+	kv.keyValue = make(map[string]string)
+	kv.executedOp = make(map[int64]string)
+	kv.exeSeq = 0
 
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)

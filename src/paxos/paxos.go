@@ -90,8 +90,26 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 // call Status() to find out if/when agreement
 // is reached.
 //
+type Op struct {
+	// Your definitions here.
+	// Field names must start with capital letters,
+	// otherwise RPC will break.Debug
+
+	// Two type of Operation "Get" "Put". Get with one argument
+	// Key, Put and Puthash with the same operation string "Put" while puthash
+	// set doHash true.
+	Operation  string
+	Key        string
+	Value      string
+	DoHash     bool
+	Identifier int64
+}
+
 func (px *Paxos) Start(seq int, v interface{}) {
 	// Your code here.
+	if v == nil {
+		log.Printf("Start agreement, but it seems to be a nil\n")
+	}
 	px.mu.Lock()
 	if _, ok := px.agreeIns[seq]; ok {
 		px.mu.Unlock()
@@ -156,29 +174,23 @@ func (px *Paxos) MakeProposer(seq int) *Proposer {
 
 const sendInterval = time.Millisecond * 100
 
-func (pr *Proposer) sendValue(v interface{}) {
-	//log.Printf("Start seq:%d\n", pr.seq)
+func (pr *Proposer) sendValue(sV interface{}) {
+	log.Printf("Start consensus seq:%d\n", pr.seq)
 	pr.px.sendMu.Lock()
 	defer pr.px.sendMu.Unlock()
-	pr.v = v
+	pr.v = sV
 	var minNum int
 	for {
 		pr.mu.Lock()
-		for _, v := range pr.resProposal {
-			// init to zero as a special indicator to show this
-			// proposal has not been set
-			v.Seq = -1
-			v.V = nil
-		}
 		// choose n, unique and higher than any n seen so far
-		var v int
+		var xx int
 		if pr.highestAccseq > pr.highestPrenum {
-			v = pr.highestAccseq + 1
+			xx = pr.highestAccseq + 1
 		} else {
-			v = pr.highestPrenum + 1
+			xx = pr.highestPrenum + 1
 		}
-		if pr.proNum < v {
-			pr.proNum = v
+		if pr.proNum < xx {
+			pr.proNum = xx
 		}
 		// send prepare(n) to all servers including self
 		pr.doneNum = 0
@@ -189,6 +201,14 @@ func (pr *Proposer) sendValue(v interface{}) {
 		minNum = pr.px.minNums[pr.px.me]
 		pr.px.mu.Unlock()
 
+		//log.Printf("Start sending the prepare %d\n", pr.seq)
+		for i, _ := range pr.resProposal {
+			// init to zero as a special indicator to show this
+			// proposal has not been set
+			pr.resProposal[i].Seq = -1
+			pr.resProposal[i].V = nil
+		}
+		//pr.printResponse()
 		for index, _ := range pr.px.peers {
 			go pr.sendPrepare(index, minNum, pr.px.me)
 		}
@@ -220,22 +240,26 @@ func (pr *Proposer) sendValue(v interface{}) {
 			pr.mu.Unlock()
 		}
 
+		//log.Printf("After prepare\n")
+		//pr.printResponse()
 		/* find the response with highest seq */
 		highestNum := -1
 		sendProposal := Proposal{}
 		pr.isreject = false
-		for i, response := range pr.resProposal {
+		for _, response := range pr.resProposal {
+			//log.Printf("me:%d/%d Seq:%d inspect num:%d interface:%d\n", pr.px.me, i, pr.seq, response.Seq, response.V)
 			if response.Seq > highestNum {
-				log.Printf("An V is set by %d\n", i)
+				//log.Printf("An V is set by %d\n", i)
+				//log.Printf("me:%dResponse interface %s is set\n", pr.px.me, response.V)
 				sendProposal.V = response.V
 				highestNum = response.Seq
 				pr.decided = false
 			}
 		}
-		log.Printf("highestNum is %d and Proposal is %d\n", highestNum, sendProposal.V)
-		if highestNum == -1 && sendProposal.V != nil {
-			log.Printf("Send original\n")
-			sendProposal.V = v
+		//log.Printf("highestNum is %d and Proposal is %d\n", highestNum, sendProposal.V)
+		if highestNum == -1 || sendProposal.V == nil {
+			//log.Printf("Send original %s replace %s\n", sV, sendProposal.V)
+			sendProposal.V = sV
 			pr.decided = true
 		}
 		pr.px.mu.Lock()
@@ -243,6 +267,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 		pr.px.mu.Unlock()
 
 		sendProposal.Seq = pr.proNum
+		//log.Printf("send accept with value:%s\n", sendProposal.V)
 		for index, _ := range pr.px.peers {
 			go pr.sendAccept(index, sendProposal, minNum, pr.px.me)
 		}
@@ -269,7 +294,7 @@ func (pr *Proposer) sendValue(v interface{}) {
 			time.Sleep(time.Duration(pr.px.me) * sendInterval)
 			continue
 		}
-		//log.Printf("The value seq:%d is decided %d now is to send\n", pr.seq, sendProposal.V)
+		log.Printf("The value seq:%d is decided now is to send\n", pr.seq)
 		for index, _ := range pr.px.peers {
 			go pr.sendDecide(index, sendProposal)
 		}
@@ -278,8 +303,14 @@ func (pr *Proposer) sendValue(v interface{}) {
 		pr.successNum = 0
 		pr.doneNum = 0
 		pr.mu.Unlock()
-		//log.Printf("End send")
+		//log.Printf("Paxos End send")
 		return
+	}
+}
+
+func (pr *Proposer) printResponse() {
+	for i, res := range pr.resProposal {
+		log.Printf("number:%d, res:%s", i, res)
 	}
 }
 
@@ -408,6 +439,7 @@ func (pr *Proposer) RecAccept(args *AcceptArgs, reply *AcceptReply) error {
 		pr.highestAccseq = args.Proposal.Seq
 		pr.highestPrenum = args.Proposal.Seq
 		pr.highestAccval = args.Proposal.V
+		//log.Printf("Accept seq:%d interface:%s\n", pr.highestAccseq, pr.highestAccval)
 		pr.accSet = true
 		//log.Printf("The highest val is set as %d\n", pr.highestAccval)
 		pr.mu.Unlock()
@@ -450,7 +482,10 @@ func (pr *Proposer) sendPrepare(index int, minNum int, caller int) {
 		pr.mu.Unlock()
 	}
 	pr.mu.Lock()
-	pr.resProposal[index] = reply.Proposal
+	if reply.Accept && responded {
+		pr.resProposal[index] = reply.Proposal
+		//log.Printf("set res num:%d v:%s\n", reply.Proposal.Seq, reply.Proposal.V)
+	}
 	pr.doneNum++
 	if pr.doneNum == pr.peerNum {
 		pr.done <- true
@@ -482,6 +517,7 @@ func (pr *Proposer) RecPrepare(args *PrepareArgs, reply *PrepareReply) error {
 			reply.Proposal.Seq = -1
 		}
 		reply.Proposal.V = pr.highestAccval
+		//log.Printf("Sendback with prepare with seq:%d iterface%s", reply.Proposal.Seq, reply.Proposal.V)
 		pr.mu.Lock()
 		pr.highestPrenum = args.ProNum
 		pr.mu.Unlock()

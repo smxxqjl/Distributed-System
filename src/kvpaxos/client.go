@@ -2,18 +2,18 @@ package kvpaxos
 
 import "net/rpc"
 import "fmt"
+import "math/rand"
 
 type Clerk struct {
-  servers []string
-  // You will have to modify this struct.
+	servers []string
+	// You will have to modify this struct.
 }
 
-
 func MakeClerk(servers []string) *Clerk {
-  ck := new(Clerk)
-  ck.servers = servers
-  // You'll have to add code here.
-  return ck
+	ck := new(Clerk)
+	ck.servers = servers
+	// You'll have to add code here.
+	return ck
 }
 
 //
@@ -33,20 +33,20 @@ func MakeClerk(servers []string) *Clerk {
 // please don't change this function.
 //
 func call(srv string, rpcname string,
-          args interface{}, reply interface{}) bool {
-  c, errx := rpc.Dial("unix", srv)
-  if errx != nil {
-    return false
-  }
-  defer c.Close()
-    
-  err := c.Call(rpcname, args, reply)
-  if err == nil {
-    return true
-  }
+	args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("unix", srv)
+	if errx != nil {
+		return false
+	}
+	defer c.Close()
 
-  fmt.Println(err)
-  return false
+	err := c.Call(rpcname, args, reply)
+	if err == nil {
+		return true
+	}
+
+	fmt.Println(err)
+	return false
 }
 
 //
@@ -55,8 +55,20 @@ func call(srv string, rpcname string,
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-  // You will have to modify this function.
-  return ""
+	// You will have to modify this function.
+	args := &GetArgs{key, nrand()}
+	var reply GetReply
+	// Here is a open problem for which server, correctness matters not, however,
+	// using this strategy will make the first server busy, I think a randomized
+	// chossing method will do better
+	randMax := len(ck.servers)
+	for {
+		serverIndex := rand.Intn(randMax)
+		if responded := call(ck.servers[serverIndex], "KVPaxos.Get", args, &reply); responded {
+			break
+		}
+	}
+	return reply.Value
 }
 
 //
@@ -64,14 +76,23 @@ func (ck *Clerk) Get(key string) string {
 // keeps trying until it succeeds.
 //
 func (ck *Clerk) PutExt(key string, value string, dohash bool) string {
-  // You will have to modify this function.
-  return ""
+	// You will have to modify this function.
+	args := &PutArgs{key, value, dohash, nrand()}
+	var reply PutReply
+	randMax := len(ck.servers)
+	for {
+		serverIndex := rand.Intn(randMax)
+		if responded := call(ck.servers[serverIndex], "KVPaxos.Put", args, &reply); responded {
+			break
+		}
+	}
+	return reply.PreviousValue
 }
 
 func (ck *Clerk) Put(key string, value string) {
-  ck.PutExt(key, value, false)
+	ck.PutExt(key, value, false)
 }
 func (ck *Clerk) PutHash(key string, value string) string {
-  v := ck.PutExt(key, value, true)
-  return v
+	v := ck.PutExt(key, value, true)
+	return v
 }
