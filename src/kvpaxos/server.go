@@ -61,17 +61,13 @@ func (kv *KVPaxos) waitAgreement(seq int, operation Op) (bool, Op) {
 	for {
 		if decided, v := kv.px.Status(seq); decided {
 			reOp := v.(Op)
-			log.Printf("Choosen id:%d and the require id is %d",
-				reOp.Identifier, operation.Identifier)
 			return operation.Identifier == reOp.Identifier, reOp
 		}
-		log.Printf("seq %d not decided wating...\n", seq)
 		time.Sleep(to)
 		if to < 2*time.Second {
 			to *= 2
 		}
 		if to >= 1*time.Second {
-			log.Printf("Active go on\n")
 			operationActive := Op{"Get", "", "", false, nrand()}
 			kv.px.Start(seq, operationActive)
 		}
@@ -85,47 +81,21 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	var seq int
 	for {
 		seq = kv.px.Max() + 1
-		log.Printf("Start agree with %d id:%d\n", seq, args.Identifier)
 		kv.px.Start(seq, sendOp)
 		if agree, _ := kv.waitAgreement(seq, sendOp); agree {
 			break
 		} else {
-			log.Printf("not choosen in this round\n")
 			continue
 		}
 	}
 
-	/*
-		to := 10 * time.Millisecond
-		for kv.exeSeq < seq {
-			time.Sleep(to)
-			if to < 10*time.Second {
-				to *= 2
-			}
-
-		}
-
-		log.Printf("After waiting")
-		kv.mu.Lock()
-		if val, ok := kv.executedOp[args.Identifier]; ok {
-			reply.Value = val
-		} else {
-			if vall, okk := kv.keyValue[args.Key]; okk {
-				reply.Value = vall
-			} else {
-				reply.Value = ""
-			}
-			kv.executedOp[args.Identifier] = reply.Value
-		}
-		log.Printf("Execute done\n")
-		kv.exeSeq++
-		kv.mu.Unlock()
-	*/
-	log.Printf("SerNun:%d Start to execute %d/%d\n", kv.me, kv.exeSeq, seq)
 	kv.executeUntil(seq)
 	kv.mu.Lock()
 	reply.Value = kv.executedOp[args.Identifier]
-	kv.px.Done(seq)
+	//kv.px.Done(seq)
+
+	log.Printf("A Get in Server:%d with Id:%d with key:%s, value:%s, Seq:%d\n",
+		kv.me, args.Identifier, args.Key, reply.Value, seq)
 	kv.mu.Unlock()
 
 	return nil
@@ -146,6 +116,8 @@ func (kv *KVPaxos) executeUntil(seq int) {
 				} else {
 					kv.executedOp[exeOp.Identifier] = ""
 				}
+				log.Printf("Server:%dSeq:%d Execute command Get key:%s value:%s",
+					kv.me, kv.exeSeq, exeOp.Key, kv.executedOp[exeOp.Identifier])
 			} else if exeOp.Operation == "Put" {
 				if _, vExist := kv.keyValue[exeOp.Key]; !vExist {
 					kv.keyValue[exeOp.Key] = ""
@@ -154,12 +126,15 @@ func (kv *KVPaxos) executeUntil(seq int) {
 					kv.executedOp[exeOp.Identifier] = kv.keyValue[exeOp.Key]
 					hashnum := hash(kv.keyValue[exeOp.Key] + exeOp.Value)
 					kv.keyValue[exeOp.Key] = strconv.Itoa(int(hashnum))
+					log.Printf("Server:%dSeq:%d Execute command PutHash key:%s value:%s",
+						kv.me, kv.exeSeq, exeOp.Key, kv.executedOp[exeOp.Identifier])
 				} else {
 					kv.executedOp[exeOp.Identifier] = kv.keyValue[exeOp.Key]
 					kv.keyValue[exeOp.Key] = exeOp.Value
+					log.Printf("Server:%dSeq:%d Execute command Put key:%s value:%s",
+						kv.me, kv.exeSeq, exeOp.Key, kv.executedOp[exeOp.Identifier])
 				}
 			} else {
-				log.Printf("Unknown method %s can not execute\n", exeOp.Operation)
 			}
 		}
 	}
@@ -173,7 +148,6 @@ func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 		args.DoHash, args.Identifier}
 	for {
 		seq = kv.px.Max() + 1
-		log.Printf("Start agree with %d id:%d\n", seq, args.Identifier)
 		kv.px.Start(seq, sendOp)
 		if agree, _ := kv.waitAgreement(seq, sendOp); agree {
 			break
@@ -182,40 +156,11 @@ func (kv *KVPaxos) Put(args *PutArgs, reply *PutReply) error {
 		}
 	}
 
-	/*
-		for kv.exeSeq < seq {
-			time.Sleep(to)
-			if to < 10*time.Second {
-				to *= 2
-			}
-
-		}
-			log.Printf("After waiting\n")
-			kv.mu.Lock()
-			if val, ok := kv.executedOp[args.Identifier]; ok {
-				reply.PreviousValue = val
-			} else {
-				if args.DoHash {
-					if _, ok := kv.keyValue[args.Key]; !ok {
-						kv.keyValue[args.Key] = ""
-					}
-					reply.PreviousValue = kv.keyValue[args.Key]
-					kv.executedOp[args.Identifier] = reply.PreviousValue
-					hashnum := hash(kv.keyValue[args.Key] + args.Value)
-					kv.keyValue[args.Key] = strconv.Itoa(int(hashnum))
-				} else {
-					kv.keyValue[args.Key] = args.Value
-				}
-			}
-			log.Printf("Done execute")
-			kv.exeSeq++
-
-			kv.mu.Unlock()
-	*/
-	log.Printf("SerNun:%d Start to execute %d/%d\n", kv.me, kv.exeSeq, seq)
 	kv.executeUntil(seq)
 	kv.mu.Lock()
 	reply.PreviousValue = kv.executedOp[args.Identifier]
+	log.Printf("A Put in Server:%d with Id:%d with key:%s, value %s hash:%s Seq:%d",
+		kv.me, args.Identifier, args.Key, args.Value, args.DoHash, seq)
 	kv.mu.Unlock()
 	return nil
 }
